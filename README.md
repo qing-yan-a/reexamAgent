@@ -8,6 +8,7 @@
 
 - LangGraph 主流程：普通对话、工具调用、人工审批、checkpoint 压缩、长期记忆保存。
 - 复试资料搜索循环：解析学校/专业/年份，判断资料缺口，生成 query，搜索公开网页，初筛来源，等待用户决定继续补搜或进入来源确认。
+- 资料输出目录：每个复试任务自动创建 `test/<学校><专业>/`，用户要求保存的资料和草稿默认放入该目录。
 - 本地 RAG：扫描本地 `test/**/*.md`，切 chunk，向量化后写入 PostgreSQL `rag_chunks` 表，查询时做 dense + BM25 混合检索。
 - 长期记忆 Store：过滤用户长期事实，写入 LangGraph PostgresStore，并在碎片过多时压缩成 `memory_summary`。
 - 安全边界：medium/high 风险工具通过 `interrupt()` 暂停，由用户审批后继续。
@@ -104,6 +105,14 @@ continue 继续补搜
 next     进入来源确认
 stop     停止并保留 session
 ```
+
+同一次任务会自动创建资料输出目录，例如：
+
+```text
+test/昆明理工大学计算机/
+```
+
+后续用户明确要求保存的资料或草稿，默认会写入这个目录，方便重新构建 RAG 索引。
 
 ## RAG 索引
 

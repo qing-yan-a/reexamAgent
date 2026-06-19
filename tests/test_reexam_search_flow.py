@@ -7,12 +7,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from personal_research_agent.graph import route_after_reexam_decision, route_after_reexam_parse
+from personal_research_agent.research_outputs import research_output_dir_name
 from personal_research_agent.reexam_search_flow import (
     build_gap_query,
     next_gap_query,
     normalize_search_decision,
     parse_reexam_goal_text,
     record_search_iteration,
+    ensure_reexam_session,
 )
 
 
@@ -79,6 +81,36 @@ class ReexamSearchFlowTests(unittest.TestCase):
         self.assertEqual(saved["data"]["search_queries"][0]["status"], "done")
         self.assertEqual(len(saved["data"]["candidate_sources"]), 1)
         self.assertEqual(len(saved["data"]["reviewed_sources"]), 1)
+
+    def test_reexam_session_records_test_output_dir(self):
+        saved = {}
+        session = {"research_goal": "", "notes": []}
+
+        def fake_write(session_id, data):
+            saved["session_id"] = session_id
+            saved["data"] = data
+
+        with patch("personal_research_agent.reexam_search_flow.require_active_session_id", return_value="s1"), patch(
+            "personal_research_agent.reexam_search_flow.read_research_session", return_value=session
+        ), patch("personal_research_agent.reexam_search_flow.write_research_session", side_effect=fake_write), patch(
+            "personal_research_agent.reexam_search_flow.research_output_dir"
+        ) as output_dir:
+            output_dir.return_value = Path("E:/study/LangGraph/test/昆明理工大学计算机")
+            result = ensure_reexam_session(
+                {
+                    "research_goal": "整理昆明理工大学计算机复试资料",
+                    "school": "昆明理工大学",
+                    "major": "计算机",
+                    "year": "latest",
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(saved["data"]["output_dir"], "test/昆明理工大学计算机")
+        self.assertIn("资料输出目录：test/昆明理工大学计算机", saved["data"]["notes"])
+
+    def test_output_dir_name_uses_school_and_major(self):
+        self.assertEqual(research_output_dir_name("A大学", "B专业"), "A大学B专业")
 
 
 if __name__ == "__main__":

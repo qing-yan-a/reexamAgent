@@ -5,6 +5,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from .research_outputs import research_output_dir, to_project_relative
 from .session_manager import read_research_session, require_active_session_id, utc_now, write_research_session
 from .tools.research_session_tools import analyze_research_readiness
 from .tools.web_tools import source_review, web_search
@@ -79,6 +80,8 @@ def ensure_reexam_session(goal: dict[str, Any]) -> dict[str, Any]:
         }
 
     now = utc_now()
+    output_dir = research_output_dir(str(goal["school"]), str(goal["major"]), create=True)
+    output_dir_relative = to_project_relative(output_dir)
     session.update(
         {
             "session_id": session_id,
@@ -87,6 +90,7 @@ def ensure_reexam_session(goal: dict[str, Any]) -> dict[str, Any]:
             "school": goal["school"],
             "major": goal["major"],
             "year": goal["year"],
+            "output_dir": output_dir_relative,
             "updated_at": now,
         }
     )
@@ -102,6 +106,8 @@ def ensure_reexam_session(goal: dict[str, Any]) -> dict[str, Any]:
         "notes",
     ]:
         session.setdefault(field, [])
+    if output_dir_relative not in session["notes"]:
+        session["notes"].append(f"资料输出目录：{output_dir_relative}")
     session.setdefault("draft_ready", False)
     write_research_session(session_id, session)
     return {"ok": True, "path": f"memory/sessions/{session_id}/research_session.json", "session": session}
@@ -253,6 +259,7 @@ def source_confirmation_message(session: dict[str, Any], path: str) -> str:
     lines = [
         "已跳出复试资料搜索循环，进入来源确认阶段。",
         f"session: {path}",
+        f"资料输出目录: {session.get('output_dir') or 'test/<学校><专业>'}",
         "",
         "请从下面候选来源里选择要保留并抽取正文的 source_index 或 URL：",
     ]
