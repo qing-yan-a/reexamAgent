@@ -1,0 +1,11 @@
+.env
+.venv/
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+*.log
+
+GraphTest/audit-output.txt
+memory/
+test/
