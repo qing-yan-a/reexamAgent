@@ -6,6 +6,6 @@ __pycache__/
 *.py[cod]
 *.log
 
-GraphTest/audit-output.txt
+GraphTest/
 memory/
 test/
