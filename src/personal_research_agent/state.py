@@ -16,6 +16,9 @@ class AgentState(TypedDict, total=False):
     working_summary: str
     retrieved_memories: list[dict[str, Any]]
     retrieved_rag: list[dict[str, Any]]
+    reexam_router: dict[str, Any]
+    reexam_route_action: str
+    reexam_route_confirmed: bool
     is_reexam_search: bool
     reexam_goal: dict[str, Any]
     reexam_session: dict[str, Any]

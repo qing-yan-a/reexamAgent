@@ -3,6 +3,7 @@ name = "agent-langgraph-lab"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.125.0",
     "ipywidgets>=8.1.8",
     "jieba>=0.42.1",
     "langchain>=1.3.4",
@@ -15,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "rank-bm25>=0.2.2",
     "requests>=2.34.2",
+    "uvicorn[standard]>=0.38.0",
     "voyageai>=0.4.0",
 ]
 
@@ -27,3 +29,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+personal_research_agent = ["web/*.html", "web/*.css", "web/*.js"]

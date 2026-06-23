@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any, Iterator
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -19,6 +20,7 @@ from .session_manager import (
     set_active_session,
 )
 from .storage import open_postgres_runtime
+from .source_selection import select_sources_for_session
 
 
 @contextmanager
@@ -26,12 +28,16 @@ def open_runtime(use_postgres: bool = True) -> Iterator[tuple[Any, Any, str]]:
     # 生产默认走 PostgresSaver/PostgresStore。
     # 本地调试时如果 Postgres、pgvector 或环境变量没准备好，就降级到内存模式，不阻塞 CLI 试跑。
     if use_postgres:
+        stack = ExitStack()
         try:
-            with open_postgres_runtime() as (checkpointer, store):
-                yield checkpointer, store, "postgres"
-                return
+            checkpointer, store = stack.enter_context(open_postgres_runtime())
         except Exception as exc:
+            stack.close()
             print(f"[warn] Postgres runtime unavailable, fallback to in-memory: {exc}", file=sys.stderr)
+        else:
+            with stack:
+                yield checkpointer, store, "postgres"
+            return
 
     yield InMemorySaver(), InMemoryStore(index=None), "memory"
 
@@ -64,6 +70,46 @@ def print_sessions() -> None:
         return
     for item in sessions:
         print(f"- {item['session_id']} | {item.get('title') or '未命名'} | {item.get('research_goal') or '未设置目标'}")
+
+
+def parse_source_selection(text: str) -> dict[str, list[Any]]:
+    """解析 CLI 的 /select 参数，支持 index、URL 和 source_key。"""
+    cleaned = (
+        text.replace("source_index=", " ")
+        .replace("indexes=", " ")
+        .replace("index=", " ")
+        .replace("urls=", " ")
+        .replace("url=", " ")
+        .replace("source_keys=", " ")
+        .replace("source_key=", " ")
+    )
+    tokens = [token.strip() for token in re.split(r"[\s,，;；]+", cleaned) if token.strip()]
+    indexes: list[int] = []
+    urls: list[str] = []
+    source_keys: list[str] = []
+    for token in tokens:
+        if token.isdigit():
+            indexes.append(int(token))
+        elif token.startswith(("http://", "https://")):
+            urls.append(token)
+        elif "|" in token:
+            source_keys.append(token)
+    return {"source_indexes": indexes, "urls": urls, "source_keys": source_keys}
+
+
+def print_source_selection_result(result: dict[str, Any]) -> None:
+    """把共享选择函数的结果打印成 CLI 友好的摘要。"""
+    selected_sources = result.get("selected_sources", [])
+    print(f"已保留来源：{len(selected_sources)}")
+    for item in selected_sources:
+        print(f"- [{item.get('source_index')}] {item.get('title') or item.get('url')}")
+        if item.get("url"):
+            print(f"  {item.get('url')}")
+    missing = result.get("missing") or []
+    if missing:
+        print("未找到的选择：")
+        for item in missing:
+            print(f"- {item.get('type')}: {item.get('value')}")
 
 
 def ensure_session(session_id: str | None, title: str = "", goal: str = "") -> str:
@@ -99,7 +145,10 @@ def run_chat(args: argparse.Namespace) -> None:
         }
 
         print(f"【research-agent】runtime={runtime_name} session={session_id} profile={profile_name}")
-        print("输入 /exit 退出，/sessions 查看会话，/session new <标题> 创建新会话，/thread <id> 切换 thread/session。")
+        print(
+            "输入 /exit 退出，/sessions 查看会话，/session new <标题> 创建新会话，"
+            "/thread <id> 切换 thread/session，/select 1,2 保留候选来源。"
+        )
 
         while True:
             try:
@@ -128,6 +177,14 @@ def run_chat(args: argparse.Namespace) -> None:
                 set_active_session(session_id)
                 config["configurable"]["thread_id"] = session_id
                 print(f"已切换 thread/session：{session_id}")
+                continue
+            if user_input.startswith("/select "):
+                selection = parse_source_selection(user_input.removeprefix("/select ").strip())
+                if not any(selection.values()):
+                    print("请输入要保留的 source_index、URL 或 source_key，例如：/select 1,2")
+                    continue
+                result = select_sources_for_session(session_id, **selection, selection_method="cli_command")
+                print_source_selection_result(result)
                 continue
 
             state_input = {

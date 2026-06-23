@@ -6,9 +6,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langchain_core.messages import AIMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode
 
-from personal_research_agent.graph import route_after_agent
-from personal_research_agent.tools import get_tool_risk, requires_approval
+from personal_research_agent.graph import route_after_agent, tool_error_message
+from personal_research_agent.tools import get_registered_tools, get_tool_risk, requires_approval
 
 
 class RiskAndRouteTests(unittest.TestCase):
@@ -27,6 +29,22 @@ class RiskAndRouteTests(unittest.TestCase):
     def test_risk_registry(self):
         self.assertEqual(get_tool_risk("read_file"), "low")
         self.assertTrue(requires_approval("write_text_file"))
+
+    def test_tool_node_returns_tool_message_on_file_error(self):
+        read_tool = next(tool for tool in get_registered_tools() if tool.name == "read_file")
+        builder = StateGraph(MessagesState)
+        builder.add_node("tools", ToolNode([read_tool], handle_tool_errors=tool_error_message))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile()
+        message = AIMessage(
+            content="",
+            tool_calls=[{"name": "read_file", "args": {"path": "IDENTITY.md"}, "id": "call_missing"}],
+        )
+
+        result = graph.invoke({"messages": [message]})
+
+        self.assertIn("工具执行失败：FileNotFoundError", result["messages"][-1].content)
 
 
 if __name__ == "__main__":

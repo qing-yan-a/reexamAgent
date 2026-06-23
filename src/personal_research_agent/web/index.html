@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>reexamAgent</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260624-tool-flow-layout" />
+  </head>
+  <body>
+    <div id="app" v-cloak>
+      <!-- 左侧栏：创建 session，并以“资料文件夹 -> session”的树形结构展示工作区。 -->
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">RA</div>
+          <div>
+            <h1>工作台</h1>
+          </div>
+        </div>
+
+        <!-- 创建 session 表单；提交后会调用 POST /sessions。 -->
+        <form class="new-session" @submit.prevent="createSession">
+          <input v-model.trim="newSession.school" placeholder="学校" />
+          <input v-model.trim="newSession.major" placeholder="专业" />
+          <input v-model.trim="newSession.year" placeholder="年份 latest" />
+          <button type="submit">创建 Session</button>
+        </form>
+
+        <!-- 工作区树来自 GET /folders。每个 folder 下带自己的 sessions。 -->
+        <section class="side-section workspace-tree">
+          <h2>工作区</h2>
+          <p v-if="!folders.length" class="empty-folder">暂无资料文件夹</p>
+          <div v-for="folder in folders" :key="folder.output_dir" class="folder-group">
+            <button
+              class="folder-row"
+              :class="{ active: selectedFolder === folder.output_dir }"
+              @click="toggleFolder(folder.output_dir)"
+            >
+              <span class="folder-label">
+                <span class="folder-glyph" aria-hidden="true"></span>
+                <span class="folder-name">{{ folder.name || folder.output_dir }}</span>
+              </span>
+              <small>{{ folder.session_count }} sessions</small>
+              <span class="folder-chevron">{{ isFolderOpen(folder.output_dir) ? 'v' : '>' }}</span>
+            </button>
+            <div v-show="isFolderOpen(folder.output_dir)" class="folder-sessions">
+              <p v-if="!folder.sessions.length" class="empty-folder">暂无 session</p>
+              <div
+                v-for="session in folder.sessions"
+                :key="session.session_id"
+                class="session-row"
+                :class="{ active: session.session_id === currentSessionId }"
+              >
+                <button class="session-main" @click="selectSession(session.session_id)">
+                  <span>{{ session.title || session.session_id }}</span>
+                  <small>{{ session.year || session.status || 'active' }}</small>
+                </button>
+                <button class="delete-session" @click="deleteSession(session.session_id)">删除</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <!-- 主工作区：左边聊天，右边研究面板/草稿。 -->
+      <main class="workspace">
+        <section class="chat-panel">
+          <!-- 顶部栏显示当前 session 标题和 WebSocket 连接状态。 -->
+          <header class="topbar">
+            <div>
+              <h2>{{ panel.current_task?.title || '未选择 Session' }}</h2>
+              <p>{{ connectionLabel }}</p>
+            </div>
+            <button class="ghost" @click="refreshAll">刷新</button>
+          </header>
+
+          <!-- 聊天消息区：history_reset 会恢复历史，message_delta 会追加流式文本。 -->
+          <div ref="messageList" class="messages">
+            <article
+              v-for="message in messages"
+              :key="message.uiId || message.id"
+              class="message"
+              :class="[
+                message.role,
+                {
+                  'tool-compact': isToolLikeMessage(message),
+                },
+              ]"
+              :data-message-key="toolMessageKey(message)"
+            >
+              <div v-if="isToolLikeMessage(message)" class="tool-details">
+                <button
+                  class="tool-summary"
+                  type="button"
+                  :aria-expanded="isToolMessageOpen(message)"
+                  @click.stop.prevent="toggleToolMessage(message)"
+                >
+                  <span class="tool-caret">{{ isToolMessageOpen(message) ? 'v' : '>' }}</span>
+                  <span class="message-role">{{ messageRoleLabel(message.role) }}</span>
+                  <span class="tool-summary-text">{{ toolMessageSummary(message) }}</span>
+                </button>
+                <div
+                  v-if="isToolMessageOpen(message)"
+                  class="tool-detail-text open"
+                >{{ toolMessageDetail(message) }}</div>
+              </div>
+              <template v-else>
+                <div class="message-role">{{ messageRoleLabel(message.role) }}</div>
+                <div class="markdown-body" v-html="renderMarkdown(message.content)"></div>
+              </template>
+            </article>
+          </div>
+
+          <!-- LangGraph interrupt 展示区：工具审批和复试搜索决策都在这里处理。 -->
+          <section v-if="interrupt" class="interrupt">
+            <h3>{{ interruptTitle }}</h3>
+            <p>{{ interrupt.message }}</p>
+            <div v-if="interrupt.type === 'approval_required'" class="tool-list">
+              <div v-for="tool in interrupt.tool_calls" :key="tool.id" class="tool-row">
+                <strong>{{ tool.name }}</strong>
+                <span>{{ tool.risk }}</span>
+                <code>{{ JSON.stringify(tool.args) }}</code>
+              </div>
+              <button @click="sendDecision('approval_response', 'yes')">批准</button>
+              <button class="danger" @click="sendDecision('approval_response', 'no')">拒绝</button>
+            </div>
+            <div v-else-if="interrupt.type === 'reexam_route_confirmation_required'" class="decision-buttons">
+              <!-- 进入专用搜索流程前的确认；yes/no 会通过 Command(resume=...) 回到 confirm_reexam_route 节点。 -->
+              <p v-if="interrupt.goal">
+                {{ interrupt.goal.school }} / {{ interrupt.goal.major }} / {{ interrupt.goal.year }}
+              </p>
+              <p v-if="interrupt.reason" class="muted">{{ interrupt.reason }}</p>
+              <button @click="sendDecision('reexam_decision', 'yes')">同意进入</button>
+              <button class="ghost" @click="sendDecision('reexam_decision', 'no')">取消</button>
+            </div>
+            <div v-else class="decision-buttons">
+              <button @click="sendDecision('reexam_decision', 'continue')">继续补搜</button>
+              <button @click="sendDecision('reexam_decision', 'next')">来源确认</button>
+              <button class="ghost" @click="sendDecision('reexam_decision', 'stop')">停止</button>
+            </div>
+          </section>
+
+          <!-- 聊天输入框；发送后通过 WebSocket user_message 事件交给后端。 -->
+          <form class="composer" @submit.prevent="sendMessage">
+            <textarea v-model.trim="draftMessage" placeholder="输入研究请求，例如：帮我搜索昆明理工大学计算机复试资料"></textarea>
+            <button type="submit" :disabled="!canSend">发送</button>
+          </form>
+        </section>
+
+        <!-- 右侧栏：研究状态和 Markdown 草稿编辑。 -->
+        <aside class="research-panel">
+          <div class="tabs">
+            <button :class="{ active: rightTab === 'panel' }" @click="rightTab = 'panel'">研究面板</button>
+            <button :class="{ active: rightTab === 'drafts' }" @click="rightTab = 'drafts'">草稿</button>
+          </div>
+
+          <!-- 研究面板：展示 search history、candidate_sources、selected_sources 等结构化状态。 -->
+          <section v-if="rightTab === 'panel'" class="panel-scroll">
+            <div class="metric-row">
+              <div>
+                <small>搜索进度</small>
+                <strong>{{ panel.search_progress?.done_queries || 0 }}/{{ panel.search_progress?.total_queries || 0 }}</strong>
+              </div>
+              <div>
+                <small>草稿状态</small>
+                <strong>{{ panel.draft_status?.draft_ready ? '可生成' : '未就绪' }}</strong>
+              </div>
+            </div>
+
+            <section class="panel-section">
+              <h3>当前任务</h3>
+              <dl>
+                <dt>学校</dt><dd>{{ panel.current_task?.school || '-' }}</dd>
+                <dt>专业</dt><dd>{{ panel.current_task?.major || '-' }}</dd>
+                <dt>年份</dt><dd>{{ panel.current_task?.year || '-' }}</dd>
+                <dt>保存目录</dt><dd>{{ panel.output_dir || '-' }}</dd>
+              </dl>
+            </section>
+
+            <section class="panel-section">
+              <h3>资料缺口</h3>
+              <p v-if="!panel.open_gaps?.length" class="muted">暂无明显缺口</p>
+              <ul>
+                <li v-for="gap in panel.open_gaps" :key="gap">{{ gap }}</li>
+              </ul>
+            </section>
+
+            <section class="panel-section">
+              <h3>搜索历史</h3>
+              <div v-for="query in panel.search_history" :key="query.query_id" class="history-row">
+                <span>{{ query.query_type }}</span>
+                <strong>{{ query.status }}</strong>
+                <p>{{ query.query }}</p>
+              </div>
+            </section>
+
+            <section class="panel-section">
+              <h3>候选来源</h3>
+              <!-- 用户勾选来源后，POST /selected-sources 写入 selected_sources。 -->
+              <div class="source-actions">
+                <button @click="saveSelectedSources" :disabled="!selectedSourceKeys.length">保留选中来源</button>
+                <small>{{ selectedSourceKeys.length }} 已勾选</small>
+              </div>
+              <article v-for="source in panel.candidate_sources" :key="source.source_key" class="source-row selectable-source">
+                <label class="source-check">
+                  <input type="checkbox" :value="source.source_key" v-model="selectedSourceKeys" />
+                </label>
+                <div>
+                  <a :href="source.url" target="_blank">{{ source.title || source.url }}</a>
+                  <div>
+                    <span>{{ source.source }}</span>
+                    <span>{{ source.relevance }}</span>
+                    <span>{{ source.next_action }}</span>
+                    <span v-if="isSelectedSource(source.source_key)">已保留</span>
+                  </div>
+                </div>
+              </article>
+            </section>
+
+            <section class="panel-section">
+              <h3>已确认来源</h3>
+              <p v-if="!panel.selected_sources?.length" class="muted">暂无已确认来源</p>
+              <article v-for="source in panel.selected_sources" :key="source.url || source.title" class="source-row">
+                <a :href="source.url" target="_blank">{{ source.title || source.url }}</a>
+                <div><span>{{ source.source || source.note || 'selected' }}</span></div>
+              </article>
+            </section>
+
+            <section class="panel-section">
+              <h3>已抽取正文</h3>
+              <p v-if="!panel.extracted_sources?.length" class="muted">暂无已抽取内容</p>
+              <article v-for="source in panel.extracted_sources" :key="source.url || source.title" class="source-row">
+                <a :href="source.url" target="_blank">{{ source.title || source.url }}</a>
+                <div><span>{{ source.content_chars || 0 }} chars</span></div>
+              </article>
+            </section>
+          </section>
+
+          <!-- 草稿编辑区：读取和保存当前 session output_dir 下的 Markdown 文件。 -->
+          <section v-else class="draft-panel">
+            <div class="draft-selector">
+              <select v-model="selectedDraft" @change="loadDraft">
+                <option value="">选择草稿</option>
+                <option v-for="draft in panel.draft_status?.draft_files || []" :key="draft.filename" :value="draft.filename">
+                  {{ draft.filename }}
+                </option>
+              </select>
+              <input v-model.trim="selectedDraft" placeholder="新草稿.md" />
+            </div>
+            <textarea v-model="draftContent" class="draft-editor" placeholder="Markdown 草稿内容"></textarea>
+            <div class="draft-preview">
+              <h3>Markdown 预览</h3>
+              <div class="markdown-body" v-html="renderMarkdown(draftContent || '暂无内容')"></div>
+            </div>
+            <div class="draft-actions">
+              <button @click="saveDraft" :disabled="!selectedDraft">保存草稿</button>
+              <span>{{ saveStatus }}</span>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/static/app.js?v=20260624-tool-flow-layout"></script>
+  </body>
+</html>

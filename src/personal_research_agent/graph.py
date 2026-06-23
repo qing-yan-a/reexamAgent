@@ -21,16 +21,22 @@ from .models import build_model
 from .prompts import CORE_PROMPT, load_profile_prompt, load_working_memory, load_working_summary
 from .rag_db import retrieve_hybrid_rag
 from .reexam_search_flow import (
+    active_reexam_session_snapshot,
     append_pending_query,
+    build_reexam_router_messages,
     ensure_reexam_session,
     error_message,
     evaluate_reexam_gaps,
     format_search_iteration_summary,
+    is_reexam_post_search_action,
     last_human_text,
     next_gap_query,
     normalize_search_decision,
+    parse_reexam_router_output,
     parse_reexam_goal_text,
     record_search_iteration,
+    reexam_goal_from_router,
+    route_confirmation_payload,
     review_web_sources,
     run_web_search,
     source_confirmation_message,
@@ -167,6 +173,77 @@ def parse_reexam_goal_node(state: AgentState) -> dict[str, Any]:
         "reexam_error": "" if goal.get("school") or not goal.get("is_reexam_search") else "没有解析到目标学校。",
         "reexam_iteration_complete": False,
         "reexam_next_action": "",
+    }
+
+
+def route_reexam_intent_node(model_name: str = "mimo"):
+    model = build_model(model_name)
+
+    def route_reexam_intent(state: AgentState) -> dict[str, Any]:
+        # 这一层是“问题路由”，只判断是否应该进入复试搜索专用子流程。
+        # 它不写业务 session，也不执行搜索；真正进入前还会用 interrupt 让用户确认。
+        text = last_human_text(list(state.get("messages", [])))
+        if is_reexam_post_search_action(text):
+            # 抽取正文/生成草稿目前还没接成固定图节点，先让普通 agent 自主调用工具。
+            # 后续补上 extract -> draft 子流程后，可以删除这个临时绕行。
+            return {
+                "is_reexam_search": False,
+                "reexam_router": {
+                    "intent": "normal_chat",
+                    "action": "post_search_tool_work",
+                    "reason": "用户请求的是已选来源抽取或草稿生成，不是新一轮资料搜索。",
+                },
+                "reexam_route_action": "normal",
+                "reexam_error": "",
+            }
+        active_session = active_reexam_session_snapshot()
+        try:
+            response = model.invoke(build_reexam_router_messages(text, active_session))
+            router = parse_reexam_router_output(str(response.content or ""))
+        except Exception as exc:
+            router = {
+                "intent": "normal_chat",
+                "action": "normal",
+                "confidence": 0.0,
+                "reason": f"router_failed: {exc}",
+            }
+
+        goal = reexam_goal_from_router(text, router, active_session)
+        is_reexam = bool(goal.get("is_reexam_search"))
+        missing_school = is_reexam and not str(goal.get("school") or "").strip()
+        if missing_school:
+            return {
+                "is_reexam_search": True,
+                "reexam_goal": goal,
+                "reexam_router": router,
+                "reexam_route_action": "clarify",
+                "reexam_error": "没有解析到目标学校。",
+                "messages": [AIMessage(content="我判断你想搜索复试资料，但还缺少目标学校。请补充学校名称，例如：河南农业大学人工智能复试资料。")],
+            }
+
+        return {
+            "is_reexam_search": is_reexam,
+            "reexam_goal": goal,
+            "reexam_router": router,
+            "reexam_route_action": "confirm" if is_reexam else "normal",
+            "reexam_route_confirmed": False,
+            "reexam_error": "",
+            "reexam_iteration_complete": False,
+            "reexam_next_action": "",
+        }
+
+    return route_reexam_intent
+
+
+def confirm_reexam_route_node(state: AgentState) -> dict[str, Any]:
+    # interrupt 在这里暂停图执行；用户同意后才真正进入 ensure_reexam_session。
+    # 用户拒绝时不再把同一条消息交给 agent 搜索，避免绕过专用流程确认。
+    decision = interrupt(route_confirmation_payload(dict(state.get("reexam_goal") or {}), dict(state.get("reexam_router") or {})))
+    if _is_yes(decision):
+        return {"reexam_route_confirmed": True}
+    return {
+        "reexam_route_confirmed": False,
+        "messages": [AIMessage(content="已取消进入复试资料搜索专用流程。你可以继续普通对话，或重新说明要搜索的学校和专业。")],
     }
 
 
@@ -324,6 +401,10 @@ def record_tool_usage_node(state: AgentState) -> dict[str, Any]:
     return {"tool_call_counts": counts, "pending_approval": [], "tool_approved": False}
 
 
+def tool_error_message(error: Exception) -> str:
+    return f"工具执行失败：{type(error).__name__}: {error}"
+
+
 def summarize_if_needed_node(model_name: str = "mimo"):
     def summarize_if_needed(state: AgentState) -> dict[str, Any]:
         # 返回 RemoveMessage 会影响 checkpoint 中的历史消息。
@@ -384,6 +465,19 @@ def route_after_reexam_parse(state: AgentState) -> str:
     return "ensure_reexam_session" if state.get("is_reexam_search") else "agent"
 
 
+def route_after_reexam_router(state: AgentState) -> str:
+    action = str(state.get("reexam_route_action") or "normal")
+    if action == "confirm":
+        return "confirm_reexam_route"
+    if action == "clarify":
+        return "summarize_if_needed"
+    return "agent"
+
+
+def route_after_reexam_route_confirmation(state: AgentState) -> str:
+    return "ensure_reexam_session" if state.get("reexam_route_confirmed") else "summarize_if_needed"
+
+
 def route_after_reexam_session(state: AgentState) -> str:
     return "summarize_if_needed" if state.get("reexam_error") else "evaluate_reexam_gaps"
 
@@ -412,7 +506,8 @@ def build_graph(checkpointer: Any | None = None, store: Any | None = None, model
     tools = get_registered_tools()
     builder = StateGraph(AgentState)
     builder.add_node("load_context", load_context_node(store))
-    builder.add_node("parse_reexam_goal", parse_reexam_goal_node)
+    builder.add_node("route_reexam_intent", route_reexam_intent_node(model_name))
+    builder.add_node("confirm_reexam_route", confirm_reexam_route_node)
     builder.add_node("ensure_reexam_session", ensure_reexam_session_node)
     builder.add_node("evaluate_reexam_gaps", evaluate_reexam_gaps_node)
     builder.add_node("generate_gap_queries", generate_gap_queries_node)
@@ -425,18 +520,28 @@ def build_graph(checkpointer: Any | None = None, store: Any | None = None, model
     builder.add_node("agent", agent_node(model_name))
     builder.add_node("fake_tool_call_guard", fake_tool_call_guard)
     builder.add_node("human_approval", human_approval_node)
-    builder.add_node("tools", ToolNode(tools))
+    builder.add_node("tools", ToolNode(tools, handle_tool_errors=tool_error_message))
     builder.add_node("record_tool_usage", record_tool_usage_node)
     builder.add_node("summarize_if_needed", summarize_if_needed_node(model_name))
     builder.add_node("save_long_term_memory", save_long_term_memory_node(store, model_name))
 
-    # START -> load_context 后先判断是否进入复试资料搜索专用循环，否则走普通 agent。
+    # START -> load_context 后先由 LLM Router 判断意图。
+    # 如果 Router 判断是复试搜索，还会先暂停给用户确认，再进入专用循环。
     builder.add_edge(START, "load_context")
-    builder.add_edge("load_context", "parse_reexam_goal")
+    builder.add_edge("load_context", "route_reexam_intent")
     builder.add_conditional_edges(
-        "parse_reexam_goal",
-        route_after_reexam_parse,
-        {"ensure_reexam_session": "ensure_reexam_session", "agent": "agent"},
+        "route_reexam_intent",
+        route_after_reexam_router,
+        {
+            "confirm_reexam_route": "confirm_reexam_route",
+            "summarize_if_needed": "summarize_if_needed",
+            "agent": "agent",
+        },
+    )
+    builder.add_conditional_edges(
+        "confirm_reexam_route",
+        route_after_reexam_route_confirmation,
+        {"ensure_reexam_session": "ensure_reexam_session", "summarize_if_needed": "summarize_if_needed"},
     )
     builder.add_conditional_edges(
         "ensure_reexam_session",
@@ -493,6 +598,16 @@ def build_graph(checkpointer: Any | None = None, store: Any | None = None, model
 def approval_payload_to_text(payload: Any) -> str:
     if not isinstance(payload, dict):
         return str(payload)
+    if payload.get("type") == "reexam_route_confirmation":
+        goal = payload.get("goal") or {}
+        lines = [str(payload.get("message", "是否进入复试搜索专用流程？"))]
+        lines.append(f"目标：{goal.get('school')} / {goal.get('major')} / {goal.get('year')}")
+        if goal.get("research_goal"):
+            lines.append(f"研究任务：{goal.get('research_goal')}")
+        if payload.get("reason"):
+            lines.append(f"判断理由：{payload.get('reason')}")
+        lines.append("可输入：yes 同意，no 取消")
+        return "\n".join(lines)
     if payload.get("type") == "reexam_search_decision":
         lines = [str(payload.get("message", "复试资料搜索需要你判断下一步："))]
         session_path = payload.get("session_path")

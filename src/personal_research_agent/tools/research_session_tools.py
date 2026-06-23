@@ -12,6 +12,7 @@ from personal_research_agent.session_manager import (
     utc_now,
     write_research_session,
 )
+from personal_research_agent.source_selection import select_sources_for_session
 
 from .registry import register_tool
 
@@ -26,7 +27,7 @@ LIST_FIELDS = {
     "open_gaps",
     "notes",
 }
-STRING_FIELDS = {"research_goal", "vertical", "school", "major", "year"}
+STRING_FIELDS = {"research_goal", "vertical", "school", "major", "year", "output_dir"}
 BOOL_FIELDS = {"draft_ready"}
 READINESS_MANAGED_FIELDS = {"draft_ready"}
 ALLOWED_UPDATE_FIELDS = (LIST_FIELDS | STRING_FIELDS | BOOL_FIELDS) - READINESS_MANAGED_FIELDS
@@ -251,7 +252,32 @@ def evaluate_research_readiness(persist: bool = True) -> dict[str, Any]:
     }
 
 
+class SelectSourcesInput(BaseModel):
+    source_indexes: list[int] = Field(default_factory=list, description="要保留的候选来源 source_index。")
+    urls: list[str] = Field(default_factory=list, description="要保留的候选来源 URL。")
+    source_keys: list[str] = Field(default_factory=list, description="前端或系统生成的稳定 source_key。")
+
+
+@tool(args_schema=SelectSourcesInput)
+def select_sources(
+    source_indexes: list[int] | None = None,
+    urls: list[str] | None = None,
+    source_keys: list[str] | None = None,
+) -> dict[str, Any]:
+    """把用户确认保留的候选来源写入当前 research_session.selected_sources。"""
+    if not (source_indexes or urls or source_keys):
+        raise ValueError("source_indexes、urls、source_keys 至少传一个")
+    return select_sources_for_session(
+        require_active_session_id(),
+        source_indexes=source_indexes or [],
+        urls=urls or [],
+        source_keys=source_keys or [],
+        selection_method="agent_tool",
+    )
+
+
 register_tool(get_research_session, "low")
 register_tool(create_research_session, "low")
 register_tool(update_research_session, "low")
 register_tool(evaluate_research_readiness, "low")
+register_tool(select_sources, "low")

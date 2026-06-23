@@ -6,14 +6,22 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from personal_research_agent.graph import route_after_reexam_decision, route_after_reexam_parse
+from personal_research_agent.graph import (
+    route_after_reexam_decision,
+    route_after_reexam_parse,
+    route_after_reexam_route_confirmation,
+    route_after_reexam_router,
+)
 from personal_research_agent.research_outputs import research_output_dir_name
 from personal_research_agent.reexam_search_flow import (
     build_gap_query,
+    is_reexam_post_search_action,
     next_gap_query,
     normalize_search_decision,
     parse_reexam_goal_text,
+    parse_reexam_router_output,
     record_search_iteration,
+    reexam_goal_from_router,
     ensure_reexam_session,
 )
 
@@ -30,6 +38,46 @@ class ReexamSearchFlowTests(unittest.TestCase):
     def test_non_reexam_message_routes_to_normal_agent(self):
         self.assertEqual(route_after_reexam_parse({"is_reexam_search": False}), "agent")
         self.assertEqual(route_after_reexam_parse({"is_reexam_search": True}), "ensure_reexam_session")
+
+    def test_post_search_actions_do_not_enter_search_router(self):
+        self.assertTrue(is_reexam_post_search_action("抽取已选来源正文并生成草稿"))
+        self.assertTrue(is_reexam_post_search_action("把保留来源整理成文档"))
+        self.assertFalse(is_reexam_post_search_action("帮我搜索河南农业大学人工智能复试资料"))
+
+    def test_llm_router_routes_to_confirmation_before_search_flow(self):
+        self.assertEqual(route_after_reexam_router({"reexam_route_action": "normal"}), "agent")
+        self.assertEqual(route_after_reexam_router({"reexam_route_action": "clarify"}), "summarize_if_needed")
+        self.assertEqual(route_after_reexam_router({"reexam_route_action": "confirm"}), "confirm_reexam_route")
+        self.assertEqual(route_after_reexam_route_confirmation({"reexam_route_confirmed": True}), "ensure_reexam_session")
+        self.assertEqual(route_after_reexam_route_confirmation({"reexam_route_confirmed": False}), "summarize_if_needed")
+
+    def test_router_goal_can_continue_from_active_session(self):
+        router = {
+            "intent": "reexam_search",
+            "action": "continue_search",
+            "school": "",
+            "major": "",
+            "year": "latest",
+            "research_goal": "",
+        }
+        session = {
+            "vertical": "postgraduate_reexam",
+            "school": "河南农业大学",
+            "major": "人工智能",
+            "year": "2026",
+        }
+
+        goal = reexam_goal_from_router("搜索资料吧", router, session)
+
+        self.assertTrue(goal["is_reexam_search"])
+        self.assertEqual(goal["school"], "河南农业大学")
+        self.assertEqual(goal["major"], "人工智能")
+        self.assertEqual(goal["year"], "2026")
+
+    def test_router_output_parser_accepts_json_inside_text(self):
+        parsed = parse_reexam_router_output('```json\n{"intent":"normal_chat","action":"normal"}\n```')
+
+        self.assertEqual(parsed["intent"], "normal_chat")
 
     def test_missing_past_questions_generates_past_question_query_first(self):
         session = {"school": "昆明理工大学", "major": "计算机", "year": "latest", "search_queries": []}

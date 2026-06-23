@@ -1,0 +1,665 @@
+:root {
+  /* 全局字体和基础配色。 */
+  color-scheme: light;
+  font-family: "Inter", "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: #f4f6f8;
+  color: #17202a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[v-cloak] {
+  display: none;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  background: #1f6feb;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  background: #e6ebf1;
+  color: #1f2937;
+}
+
+button.danger {
+  background: #b42318;
+}
+
+#app {
+  /* 页面最外层：左侧栏 + 主工作区。 */
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar {
+  /* 左侧栏独立滚动，避免工作区树过长时挤压主聊天区域。 */
+  background: #f1f5f9;
+  color: #1f2937;
+  border-right: 1px solid #d8dee4;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.brand {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.brand-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: #2bb3a3;
+  color: #061516;
+  font-weight: 800;
+}
+
+.brand h1,
+.brand p,
+.topbar h2,
+.topbar p {
+  margin: 0;
+}
+
+.brand p,
+.topbar p,
+.muted,
+small {
+  color: #7c8a99;
+}
+
+.new-session,
+.side-section,
+.session-list {
+  /* 左侧表单、工作区树和 session 列表都使用纵向布局。 */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.new-session input,
+.composer textarea,
+.draft-editor,
+.draft-selector input,
+.draft-selector select {
+  width: 100%;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: #fff;
+  color: #17202a;
+}
+
+.side-section h2 {
+  margin: 4px 0;
+  font-size: 13px;
+  color: #65758b;
+}
+
+.folder-row {
+  /* 工作区文件夹行：文件夹名、session 数量、展开箭头。 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  color: #1f2937;
+  border: 1px solid transparent;
+  text-align: left;
+}
+
+.session-row {
+  display: grid;
+  grid-template-columns: 1fr 48px;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.session-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  background: transparent;
+  color: #1f2937;
+  border: 1px solid transparent;
+}
+
+.delete-session {
+  padding: 6px;
+  background: #f3d6d9;
+  color: #8a1f2d;
+}
+
+.folder-row.active,
+.session-row.active .session-main {
+  background: #fff;
+  border-color: #8cb4ff;
+}
+
+.workspace-tree {
+  min-height: 0;
+}
+
+.folder-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.folder-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.folder-name,
+.session-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.folder-glyph {
+  position: relative;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 12px;
+  border: 1px solid #7c8a99;
+  border-radius: 2px;
+}
+
+.folder-glyph::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: -5px;
+  width: 8px;
+  height: 5px;
+  border: 1px solid #7c8a99;
+  border-bottom: 0;
+  border-radius: 2px 2px 0 0;
+}
+
+.folder-chevron {
+  color: #65758b;
+  text-align: right;
+}
+
+.folder-sessions {
+  /* 文件夹展开后，session 子项缩进显示。 */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid #c9d1d9;
+}
+
+.empty-folder {
+  margin: 0;
+  padding: 6px 8px;
+  color: #7c8a99;
+  font-size: 12px;
+}
+
+.workspace {
+  /* 主工作区：中间聊天区 + 右侧研究面板。 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-panel,
+.research-panel {
+  /* 两个主面板都锁定在视口高度内，由内部区域自行滚动。 */
+  height: 100vh;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-panel {
+  border-right: 1px solid #d8dee4;
+}
+
+.topbar {
+  /* 聊天顶部栏固定高度，不随消息列表滚动。 */
+  min-height: 70px;
+  flex: 0 0 auto;
+  padding: 16px 20px;
+  border-bottom: 1px solid #d8dee4;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fff;
+}
+
+.messages {
+  /* 聊天消息列表是中间唯一可滚动区域，输入框固定在底部。 */
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.message {
+  /* Agent 默认消息气泡。 */
+  flex: 0 0 auto;
+  max-width: 78%;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.message.user {
+  /* 用户消息靠右显示。 */
+  align-self: flex-end;
+  background: #e8f1ff;
+  border-color: #b6d3ff;
+}
+
+.message.tool {
+  /* 工具消息来自 ToolMessage，用更淡的样式区别于自然语言回复。 */
+  max-width: 88%;
+  background: #f6f8fa;
+  border-color: #c9d1d9;
+}
+
+.message.tool-compact {
+  padding: 0;
+  height: auto;
+  max-height: none;
+  min-height: 44px;
+}
+
+.message-role {
+  font-size: 12px;
+  color: #57606a;
+  margin-bottom: 6px;
+}
+
+.message pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-details {
+  width: 100%;
+  display: block;
+}
+
+.tool-summary {
+  /* 工具消息默认只展示一行摘要，点击后展开完整 JSON/返回内容。 */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  min-height: 42px;
+  border-radius: 0;
+  background: transparent;
+  color: #1f2937;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-summary:hover {
+  background: #eef2f6;
+}
+
+.tool-details .message-role {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.tool-caret {
+  flex: 0 0 auto;
+  color: #65758b;
+  font-weight: 700;
+}
+
+.tool-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.tool-detail-text {
+  display: none;
+  border-top: 1px solid #d8dee4;
+  padding: 10px 12px;
+  min-height: 40px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: #fff;
+  color: #1f2937;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+.tool-detail-text.open {
+  display: block;
+}
+
+.markdown-body {
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0 0 8px;
+}
+
+.markdown-body p:last-child,
+.markdown-body ul:last-child,
+.markdown-body ol:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 22px;
+}
+
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5 {
+  margin: 10px 0 6px;
+  font-size: 15px;
+}
+
+.markdown-body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #eef2f6;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.92em;
+}
+
+.markdown-body a {
+  color: #0b63ce;
+  text-decoration: none;
+}
+
+.interrupt {
+  /* LangGraph interrupt 暂停时显示的审批/决策面板。 */
+  flex: 0 0 auto;
+  margin: 0 20px 12px;
+  border: 1px solid #f0b429;
+  background: #fff8e6;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.interrupt h3 {
+  margin: 0 0 6px;
+}
+
+.decision-buttons,
+.tool-list,
+.draft-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tool-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 120px 70px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.tool-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer {
+  /* 输入框固定在聊天面板底部，不跟随消息滚动。 */
+  flex: 0 0 auto;
+  padding: 14px 20px;
+  background: #fff;
+  border-top: 1px solid #d8dee4;
+  display: grid;
+  grid-template-columns: 1fr 88px;
+  gap: 10px;
+}
+
+.composer textarea {
+  min-height: 54px;
+  resize: vertical;
+}
+
+.research-panel {
+  background: #fbfcfd;
+}
+
+.tabs {
+  /* 右侧栏顶部的“研究面板 / 草稿”切换。 */
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid #d8dee4;
+}
+
+.tabs button {
+  border-radius: 0;
+  background: #f6f8fa;
+  color: #24292f;
+  border-bottom: 3px solid transparent;
+}
+
+.tabs button.active {
+  background: #fff;
+  border-bottom-color: #1f6feb;
+}
+
+.panel-scroll,
+.draft-panel {
+  /* 右侧内容独立滚动，防止把中间聊天输入框挤走。 */
+  overflow: auto;
+  padding: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.metric-row {
+  /* 右侧面板顶部两个概览指标。 */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.metric-row > div,
+.panel-section {
+  border: 1px solid #d8dee4;
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.metric-row strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 20px;
+}
+
+.panel-section {
+  margin-top: 12px;
+}
+
+.panel-section h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 6px;
+  margin: 0;
+}
+
+dt {
+  color: #57606a;
+}
+
+dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.history-row,
+.source-row {
+  border-top: 1px solid #edf1f4;
+  padding: 9px 0;
+}
+
+.history-row:first-of-type,
+.source-row:first-of-type {
+  border-top: 0;
+}
+
+.history-row p {
+  margin: 5px 0 0;
+}
+
+.history-row span,
+.source-row span {
+  display: inline-block;
+  margin-right: 6px;
+  color: #57606a;
+  font-size: 12px;
+}
+
+.source-row a {
+  color: #0b63ce;
+  text-decoration: none;
+}
+
+.source-actions {
+  /* 候选来源列表上方的批量保留操作区。 */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.selectable-source {
+  /* 每条候选来源左侧是 checkbox，右侧是来源信息。 */
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.source-check {
+  display: grid;
+  place-items: center;
+  min-height: 24px;
+}
+
+.source-check input {
+  width: 16px;
+  height: 16px;
+}
+
+.draft-panel {
+  /* 草稿 tab 的编辑器、预览和保存按钮纵向排列。 */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.draft-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.draft-editor,
+.draft-preview {
+  min-height: 260px;
+}
+
+.draft-editor {
+  resize: none;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  line-height: 1.5;
+}
+
+.draft-preview {
+  border: 1px solid #d8dee4;
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.draft-preview h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.draft-preview pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

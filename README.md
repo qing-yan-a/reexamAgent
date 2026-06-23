@@ -68,6 +68,8 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 ## 启动
 
+CLI 入口：
+
 ```powershell
 cd E:\study\LangGraph
 .\.venv\Scripts\python.exe -m personal_research_agent.cli
@@ -77,6 +79,19 @@ cd E:\study\LangGraph
 
 ```powershell
 .\.venv\Scripts\python.exe -m personal_research_agent.cli --memory-only
+```
+
+Web 工作台入口：
+
+```powershell
+cd E:\study\LangGraph
+.\.venv\Scripts\uvicorn.exe personal_research_agent.api.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8000
 ```
 
 启动后可以输入：
