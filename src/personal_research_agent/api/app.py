@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from personal_research_agent.cli import interrupt_payload, latest_ai_text, open_
 from personal_research_agent.config import DEFAULT_PROFILE, PROJECT_ROOT, get_env
 from personal_research_agent.graph import build_graph
 from personal_research_agent.research_outputs import research_output_dir, to_project_relative
+from personal_research_agent.session_log import append_session_log
 from personal_research_agent.session_manager import (
     create_session,
     ensure_session_storage,
@@ -29,6 +31,7 @@ from personal_research_agent.session_manager import (
     write_research_session,
 )
 from personal_research_agent.source_selection import select_sources_for_session
+from personal_research_agent.storage import delete_thread_checkpoints
 
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "web"
@@ -88,12 +91,16 @@ def api_get_session(session_id: str) -> dict[str, Any]:
 
 @app.delete("/sessions/{session_id}")
 def api_delete_session(session_id: str) -> dict[str, Any]:
-    """删除 session 目录；不会删除 test/ 下已经保存的资料和草稿。"""
+    """删除 session 目录和同名 checkpoint；不会删除 test/ 下已经保存的资料和草稿。"""
     directory = session_dir(session_id)
     if not directory.exists():
         raise HTTPException(status_code=404, detail="session 不存在")
+    try:
+        delete_thread_checkpoints(session_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"checkpoint 清理失败：{exc}") from exc
     shutil.rmtree(directory)
-    return {"ok": True, "deleted": session_id}
+    return {"ok": True, "deleted": session_id, "checkpoint_deleted": True}
 
 
 @app.get("/folders")
@@ -152,6 +159,10 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
     user_id = get_env("USER_ID", "default")
     profile_name = DEFAULT_PROFILE
     config = {"configurable": {"thread_id": session_id, "user_id": user_id, "profile_name": profile_name}}
+    append_session_log(
+        "websocket_connected",
+        {"thread_id": session_id, "user_id": user_id, "profile_name": profile_name},
+    )
 
     try:
         with open_runtime(use_postgres=True) as (checkpointer, store, runtime_name):
@@ -183,11 +194,22 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     if not message:
                         await websocket.send_json({"type": "error", "message": "message 不能为空"})
                         continue
-                    await websocket.send_json({"type": "message_start", "role": "user", "message_id": f"user_{uuid.uuid4().hex}"})
+                    created_at = utc_now_iso()
+                    append_session_log(
+                        "user_message",
+                        {
+                            "thread_id": session_id,
+                            "user_id": user_id,
+                            "profile_name": profile_name,
+                            "content": message,
+                            "entrypoint": "web",
+                        },
+                    )
+                    await websocket.send_json({"type": "message_start", "role": "user", "message_id": f"user_{uuid.uuid4().hex}", "created_at": created_at})
                     await websocket.send_json({"type": "message_delta", "delta": message})
                     state_input = {
                         # 每轮只提交本次 HumanMessage；历史由 checkpointer 根据 thread_id 自动恢复。
-                        "messages": [HumanMessage(content=message)],
+                        "messages": [HumanMessage(content=message, additional_kwargs={"created_at": created_at})],
                         "user_id": user_id,
                         "thread_id": session_id,
                         "profile_name": profile_name,
@@ -197,13 +219,29 @@ async def websocket_session(websocket: WebSocket, session_id: str) -> None:
                     continue
                 if event_type in {"approval_response", "reexam_decision"}:
                     value = str(event.get("value") or "").strip()
+                    append_session_log(
+                        "interrupt_resume",
+                        {
+                            "thread_id": session_id,
+                            "user_id": user_id,
+                            "profile_name": profile_name,
+                            "event_type": event_type,
+                            "value": value,
+                            "entrypoint": "web",
+                        },
+                    )
                     # interrupt 暂停后，Command(resume=...) 会把用户决策送回暂停点继续执行。
                     await stream_graph_result(websocket, session_id, graph, Command(resume=value), config)
                     continue
                 await websocket.send_json({"type": "error", "message": f"未知事件类型：{event_type}"})
     except WebSocketDisconnect:
+        append_session_log("websocket_disconnected", {"thread_id": session_id, "user_id": user_id, "profile_name": profile_name})
         return
     except Exception as exc:
+        append_session_log(
+            "error",
+            {"thread_id": session_id, "user_id": user_id, "profile_name": profile_name, "error": str(exc), "entrypoint": "websocket"},
+        )
         await websocket.send_json({"type": "error", "message": str(exc)})
 
 
@@ -292,6 +330,7 @@ def serialize_chat_message(message: Any, index: int) -> dict[str, Any] | None:
         "id": getattr(message, "id", None) or f"history_{index}",
         "role": role,
         "content": content,
+        "created_at": message_created_at(message),
     }
 
 
@@ -305,7 +344,7 @@ async def send_graph_result(websocket: WebSocket, session_id: str, result: dict[
     text = latest_ai_text(result)
     if text:
         message_id = f"msg_{uuid.uuid4().hex}"
-        await websocket.send_json({"type": "message_start", "role": "assistant", "message_id": message_id})
+        await websocket.send_json({"type": "message_start", "role": "assistant", "message_id": message_id, "created_at": utc_now_iso()})
         await websocket.send_json({"type": "message_delta", "message_id": message_id, "delta": text})
         await websocket.send_json({"type": "message_end", "message_id": message_id})
     await send_panel(websocket, session_id)
@@ -330,7 +369,7 @@ async def stream_graph_result(websocket: WebSocket, session_id: str, graph: Any,
             return
         current_message_id = ensure_message_id()
         if not streamed_text:
-            await websocket.send_json({"type": "message_start", "role": "assistant", "message_id": current_message_id})
+            await websocket.send_json({"type": "message_start", "role": "assistant", "message_id": current_message_id, "created_at": utc_now_iso()})
             streamed_text = True
         await websocket.send_json({"type": "message_delta", "message_id": current_message_id, "delta": delta})
 
@@ -340,7 +379,14 @@ async def stream_graph_result(websocket: WebSocket, session_id: str, graph: Any,
         if not text:
             return
         current_message_id = str(item.get("id") or f"msg_{uuid.uuid4().hex}")
-        await websocket.send_json({"type": "message_start", "role": item.get("role", "assistant"), "message_id": current_message_id})
+        await websocket.send_json(
+            {
+                "type": "message_start",
+                "role": item.get("role", "assistant"),
+                "message_id": current_message_id,
+                "created_at": item.get("created_at") or utc_now_iso(),
+            }
+        )
         await websocket.send_json({"type": "message_delta", "message_id": current_message_id, "delta": text})
         await websocket.send_json({"type": "message_end", "message_id": current_message_id})
 
@@ -364,7 +410,18 @@ async def stream_graph_result(websocket: WebSocket, session_id: str, graph: Any,
             # 图暂停时把 interrupt 转成前端可交互事件，比如审批按钮或复试搜索决策。
             if streamed_text:
                 await websocket.send_json({"type": "message_end", "message_id": message_id})
-            await send_interrupt(websocket, interrupt_payload({"__interrupt__": data["__interrupt__"]}))
+            payload = interrupt_payload({"__interrupt__": data["__interrupt__"]})
+            append_session_log(
+                "interrupt",
+                {
+                    "thread_id": str(config.get("configurable", {}).get("thread_id", "")),
+                    "user_id": str(config.get("configurable", {}).get("user_id", "")),
+                    "profile_name": str(config.get("configurable", {}).get("profile_name", "")),
+                    "payload": payload,
+                    "entrypoint": "web",
+                },
+            )
+            await send_interrupt(websocket, payload)
             await send_panel(websocket, session_id)
             return
 
@@ -399,6 +456,20 @@ def message_text(message: BaseMessage) -> str:
                 parts.append(str(item.get("text") or ""))
         return "".join(parts)
     return str(content or "")
+
+
+def message_created_at(message: BaseMessage) -> str:
+    """Return a persisted message timestamp when LangChain metadata carries one."""
+    for source in (getattr(message, "additional_kwargs", None), getattr(message, "response_metadata", None)):
+        if isinstance(source, dict):
+            value = source.get("created_at")
+            if value:
+                return str(value)
+    return ""
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def is_user_visible_stream(metadata: Any) -> bool:

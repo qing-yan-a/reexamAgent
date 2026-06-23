@@ -147,6 +147,41 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(saved["data"]["selected_sources"][0]["url"], "https://example.com/a")
         self.assertEqual(saved["data"]["selected_sources"][0]["next_action"], "keep")
 
+    def test_delete_session_removes_checkpoint_before_directory(self):
+        client = TestClient(app)
+        with TemporaryDirectory() as tmp:
+            session_path = Path(tmp) / "s1"
+            session_path.mkdir()
+            calls = []
+
+            def fake_delete_checkpoints(session_id):
+                calls.append(("checkpoint", session_id, session_path.exists()))
+
+            with patch("personal_research_agent.api.app.session_dir", return_value=session_path), patch(
+                "personal_research_agent.api.app.delete_thread_checkpoints", side_effect=fake_delete_checkpoints
+            ):
+                response = client.delete("/sessions/s1")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(calls, [("checkpoint", "s1", True)])
+            self.assertFalse(session_path.exists())
+            self.assertTrue(response.json()["checkpoint_deleted"])
+
+    def test_delete_session_keeps_directory_when_checkpoint_cleanup_fails(self):
+        client = TestClient(app)
+        with TemporaryDirectory() as tmp:
+            session_path = Path(tmp) / "s1"
+            session_path.mkdir()
+
+            with patch("personal_research_agent.api.app.session_dir", return_value=session_path), patch(
+                "personal_research_agent.api.app.delete_thread_checkpoints", side_effect=RuntimeError("db down")
+            ):
+                response = client.delete("/sessions/s1")
+
+            self.assertEqual(response.status_code, 500)
+            self.assertTrue(session_path.exists())
+            self.assertIn("checkpoint 清理失败", response.text)
+
     def test_stream_graph_result_sends_token_deltas(self):
         websocket = FakeWebSocket()
         graph = StreamingGraph(

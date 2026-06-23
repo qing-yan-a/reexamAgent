@@ -13,6 +13,7 @@ from langgraph.types import Command
 
 from .config import DEFAULT_PROFILE, get_env
 from .graph import approval_payload_to_text, build_graph
+from .session_log import append_session_log
 from .session_manager import (
     create_session,
     get_active_session_id,
@@ -145,6 +146,10 @@ def run_chat(args: argparse.Namespace) -> None:
         }
 
         print(f"【research-agent】runtime={runtime_name} session={session_id} profile={profile_name}")
+        append_session_log(
+            "cli_started",
+            {"thread_id": session_id, "user_id": user_id, "profile_name": profile_name, "runtime": runtime_name},
+        )
         print(
             "输入 /exit 退出，/sessions 查看会话，/session new <标题> 创建新会话，"
             "/thread <id> 切换 thread/session，/select 1,2 保留候选来源。"
@@ -160,6 +165,7 @@ def run_chat(args: argparse.Namespace) -> None:
             if not user_input:
                 continue
             if user_input == "/exit":
+                append_session_log("cli_exit", {"thread_id": session_id, "user_id": user_id, "profile_name": profile_name})
                 return
             if user_input == "/sessions":
                 print_sessions()
@@ -171,12 +177,20 @@ def run_chat(args: argparse.Namespace) -> None:
                 set_active_session(session_id)
                 config["configurable"]["thread_id"] = session_id
                 print(f"已创建并切换 session：{session_id}")
+                append_session_log(
+                    "thread_switched",
+                    {"thread_id": session_id, "user_id": user_id, "profile_name": profile_name, "source": "session_new"},
+                )
                 continue
             if user_input.startswith("/thread "):
                 session_id = user_input.removeprefix("/thread ").strip()
                 set_active_session(session_id)
                 config["configurable"]["thread_id"] = session_id
                 print(f"已切换 thread/session：{session_id}")
+                append_session_log(
+                    "thread_switched",
+                    {"thread_id": session_id, "user_id": user_id, "profile_name": profile_name, "source": "thread_command"},
+                )
                 continue
             if user_input.startswith("/select "):
                 selection = parse_source_selection(user_input.removeprefix("/select ").strip())
@@ -184,9 +198,30 @@ def run_chat(args: argparse.Namespace) -> None:
                     print("请输入要保留的 source_index、URL 或 source_key，例如：/select 1,2")
                     continue
                 result = select_sources_for_session(session_id, **selection, selection_method="cli_command")
+                append_session_log(
+                    "source_selection",
+                    {
+                        "thread_id": session_id,
+                        "user_id": user_id,
+                        "profile_name": profile_name,
+                        "selection": selection,
+                        "selected_count": result.get("selected_count", 0),
+                        "missing": result.get("missing", []),
+                    },
+                )
                 print_source_selection_result(result)
                 continue
 
+            append_session_log(
+                "user_message",
+                {
+                    "thread_id": session_id,
+                    "user_id": user_id,
+                    "profile_name": profile_name,
+                    "content": user_input,
+                    "entrypoint": "cli",
+                },
+            )
             state_input = {
                 # 每轮只输入本次 HumanMessage；历史消息由 checkpointer 按 thread_id 自动恢复。
                 "messages": [HumanMessage(content=user_input)],
@@ -201,10 +236,31 @@ def run_chat(args: argparse.Namespace) -> None:
                 if payload is None:
                     break
                 interrupt_type = payload.get("type") if isinstance(payload, dict) else "interrupt"
+                append_session_log(
+                    "interrupt",
+                    {
+                        "thread_id": session_id,
+                        "user_id": user_id,
+                        "profile_name": profile_name,
+                        "payload": payload,
+                        "entrypoint": "cli",
+                    },
+                )
                 print(f"\n===== {interrupt_type or 'interrupt'} =====")
                 print(approval_payload_to_text(payload))
                 prompt = "审批结果 yes/no：" if interrupt_type == "tool_approval" else "请输入选择："
                 approval = input(prompt).strip()
+                append_session_log(
+                    "interrupt_resume",
+                    {
+                        "thread_id": session_id,
+                        "user_id": user_id,
+                        "profile_name": profile_name,
+                        "interrupt_type": interrupt_type,
+                        "value": approval,
+                        "entrypoint": "cli",
+                    },
+                )
                 # Command(resume=...) 会让图从 interrupt 暂停点继续执行。
                 result = graph.invoke(Command(resume=approval), config=config)
 

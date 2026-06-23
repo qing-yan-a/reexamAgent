@@ -27,6 +27,7 @@ flowchart LR
     graph --> checkpoint["PostgreSQL checkpoint"]
     graph --> store["PostgreSQL store"]
     graph --> rag["rag_chunks"]
+    graph --> runlog["sessions/*.jsonl 运行日志"]
 ```
 
 ## 依赖与打包
@@ -48,6 +49,12 @@ personal_research_agent = ["web/*.html", "web/*.css", "web/*.js"]
 ```
 
 这表示如果以后项目被安装成 Python 包，`web/` 里的静态文件也会跟着包一起分发。否则 `FastAPI` 找不到 `index.html`、`app.js`、`styles.css`。
+
+## 运行日志
+
+项目根目录下的 `sessions/*.jsonl` 是进程级运行日志，不是 research session 的业务状态。它记录用户输入、模型输出、工具调用、工具结果、interrupt 选择和错误，主要用于排查一次运行中发生了什么。
+
+`memory/sessions/{session_id}/` 仍然只保存业务状态和工作记忆；删除 research session 时不会把 `sessions/*.jsonl` 当作业务状态一起删除。
 
 ## 后端入口 api/app.py
 
@@ -109,10 +116,11 @@ test/学校专业
 
 `GET /sessions/{session_id}` 读取单个 session 摘要。前端目前主要用 `/sessions` 和 `/folders`，这个接口更多是给调试和后续扩展用。
 
-`DELETE /sessions/{session_id}` 删除 session 目录。注意它只删：
+`DELETE /sessions/{session_id}` 删除 session 目录，并清理同名 LangGraph checkpoint。它会删除：
 
 ```text
 memory/sessions/{session_id}
+PostgreSQL checkpoint 中 thread_id = {session_id} 的记录
 ```
 
 不会删除 `test/学校专业` 里的资料和草稿。这样做是为了避免误删用户收集的复试资料。
@@ -209,7 +217,7 @@ output_dir
 selected_sources
 ```
 
-这个接口让“保留哪些复试资料来源”变成明确的用户选择，而不是让模型自己猜。后续抽取正文、生成草稿，都应该优先基于 `selected_sources`。
+这个接口让“保留哪些复试资料来源”变成明确的用户选择，而不是让模型自己猜。后续抽取正文、生成草稿内容，都应该优先基于 `selected_sources`；草稿保存由右侧草稿编辑器或草稿保存接口完成。
 
 ## 草稿接口
 

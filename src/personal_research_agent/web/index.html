@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>reexamAgent</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260624-tool-flow-layout" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260624-message-time" />
   </head>
   <body>
     <div id="app" v-cloak>
@@ -97,6 +97,7 @@
                   <span class="tool-caret">{{ isToolMessageOpen(message) ? 'v' : '>' }}</span>
                   <span class="message-role">{{ messageRoleLabel(message.role) }}</span>
                   <span class="tool-summary-text">{{ toolMessageSummary(message) }}</span>
+                  <time class="message-time">{{ formatMessageTime(message.createdAt) }}</time>
                 </button>
                 <div
                   v-if="isToolMessageOpen(message)"
@@ -104,7 +105,10 @@
                 >{{ toolMessageDetail(message) }}</div>
               </div>
               <template v-else>
-                <div class="message-role">{{ messageRoleLabel(message.role) }}</div>
+                <div class="message-meta">
+                  <span class="message-role">{{ messageRoleLabel(message.role) }}</span>
+                  <time class="message-time">{{ formatMessageTime(message.createdAt) }}</time>
+                </div>
                 <div class="markdown-body" v-html="renderMarkdown(message.content)"></div>
               </template>
             </article>
@@ -260,6 +264,6 @@
       </main>
     </div>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="/static/app.js?v=20260624-tool-flow-layout"></script>
+    <script src="/static/app.js?v=20260624-message-time"></script>
   </body>
 </html>

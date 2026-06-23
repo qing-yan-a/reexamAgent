@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -42,8 +43,9 @@ from .reexam_search_flow import (
     source_confirmation_message,
     stop_message,
 )
+from .session_log import append_session_log
 from .state import AgentState
-from .tools import get_registered_tools, get_tool_risk, requires_approval
+from .tools import get_registered_tools, get_tool_call_risk, tool_call_requires_approval
 
 
 # 下面几个 helper 只负责从 LangGraph 的消息列表里取“最近一次关键消息”。
@@ -119,7 +121,7 @@ def agent_node(model_name: str = "mimo"):
     tools = get_registered_tools()
     model = build_model(model_name).bind_tools(tools)
 
-    def agent(state: AgentState) -> dict[str, Any]:
+    def agent(state: AgentState, config: RunnableConfig | None = None) -> dict[str, Any]:
         # 每次模型调用都重新组装系统上下文：核心规则 + profile + 文件态 working memory/summary
         # + 本轮按语义检索到的长期记忆。只有模型响应会写入 checkpoint。
         profile_name = state.get("profile_name", "research_to_product")
@@ -158,6 +160,27 @@ def agent_node(model_name: str = "mimo"):
         runtime_messages = [SystemMessage(content="\n\n".join(part for part in system_parts if part.strip()))]
         runtime_messages.extend(list(state.get("messages", [])))
         response = model.invoke(runtime_messages)
+        response.additional_kwargs = {**dict(response.additional_kwargs or {}), "created_at": utc_now_iso()}
+        log_context = runtime_log_context(state, config)
+        append_session_log(
+            "assistant_message",
+            {
+                **log_context,
+                "node": "agent",
+                "content": message_content_for_log(response),
+                "tool_calls": list(response.tool_calls or []),
+            },
+        )
+        for call in response.tool_calls or []:
+            append_session_log(
+                "tool_call",
+                {
+                    **log_context,
+                    "tool_name": call.get("name"),
+                    "tool_call_id": call.get("id"),
+                    "arguments": call.get("args", {}),
+                },
+            )
         # tool_approved 每次模型输出后重置，防止上一轮审批状态误放行下一轮工具调用。
         return {"messages": [response], "tool_approved": False}
 
@@ -239,6 +262,15 @@ def confirm_reexam_route_node(state: AgentState) -> dict[str, Any]:
     # interrupt 在这里暂停图执行；用户同意后才真正进入 ensure_reexam_session。
     # 用户拒绝时不再把同一条消息交给 agent 搜索，避免绕过专用流程确认。
     decision = interrupt(route_confirmation_payload(dict(state.get("reexam_goal") or {}), dict(state.get("reexam_router") or {})))
+    append_session_log(
+        "reexam_route_confirmation_response",
+        {
+            **runtime_log_context(state),
+            "raw_value": decision,
+            "confirmed": _is_yes(decision),
+            "goal": dict(state.get("reexam_goal") or {}),
+        },
+    )
     if _is_yes(decision):
         return {"reexam_route_confirmed": True}
     return {
@@ -267,7 +299,9 @@ def ensure_reexam_session_node(state: AgentState) -> dict[str, Any]:
 
 
 def evaluate_reexam_gaps_node(state: AgentState) -> dict[str, Any]:
+    append_session_log("tool_call", {**runtime_log_context(state), "tool_name": "evaluate_research_readiness", "arguments": {"persist": True}})
     result = evaluate_reexam_gaps(persist=True)
+    append_session_log("tool_result", {**runtime_log_context(state), "tool_name": "evaluate_research_readiness", "content": result})
     return {
         "reexam_readiness": result,
         "reexam_open_gaps": list(result.get("open_gaps") or []),
@@ -289,10 +323,13 @@ def run_one_web_search_node(state: AgentState) -> dict[str, Any]:
     query = str(query_item.get("query", "")).strip()
     if not query:
         return {"reexam_search_result": {}, "reexam_error": "没有可执行的搜索 query。"}
+    append_session_log("tool_call", {**runtime_log_context(state), "tool_name": "web_search", "arguments": {"query": query, "max_results": 5}})
     try:
         result = run_web_search(query, max_results=5)
+        append_session_log("tool_result", {**runtime_log_context(state), "tool_name": "web_search", "content": result})
         return {"reexam_search_result": result, "reexam_error": ""}
     except Exception as exc:
+        append_session_log("tool_result", {**runtime_log_context(state), "tool_name": "web_search", "content": {"ok": False, "error": str(exc)}})
         return {"reexam_search_result": {}, "reexam_error": f"web_search 失败：{exc}"}
 
 
@@ -302,10 +339,20 @@ def review_sources_node(state: AgentState) -> dict[str, Any]:
     search_result = dict(state.get("reexam_search_result") or {})
     sources = list(search_result.get("results") or [])
     goal = dict(state.get("reexam_goal") or {})
+    append_session_log(
+        "tool_call",
+        {
+            **runtime_log_context(state),
+            "tool_name": "source_review",
+            "arguments": {"research_goal": str(goal.get("research_goal") or ""), "source_count": len(sources)},
+        },
+    )
     try:
         review = review_web_sources(str(goal.get("research_goal") or ""), sources)
+        append_session_log("tool_result", {**runtime_log_context(state), "tool_name": "source_review", "content": review})
         return {"reexam_review_result": review}
     except Exception as exc:
+        append_session_log("tool_result", {**runtime_log_context(state), "tool_name": "source_review", "content": {"ok": False, "error": str(exc)}})
         return {"reexam_review_result": {}, "reexam_error": f"source_review 失败：{exc}"}
 
 
@@ -326,6 +373,16 @@ def record_search_iteration_node(state: AgentState) -> dict[str, Any]:
 
 def ask_user_next_step_node(state: AgentState) -> dict[str, Any]:
     decision = interrupt(format_search_iteration_summary(dict(state)))
+    append_session_log(
+        "reexam_search_decision",
+        {
+            **runtime_log_context(state),
+            "raw_value": decision,
+            "normalized": normalize_search_decision(decision),
+            "candidate_count": len((state.get("reexam_session") or {}).get("candidate_sources") or []),
+            "reviewed_count": len((state.get("reexam_session") or {}).get("reviewed_sources") or []),
+        },
+    )
     return {"reexam_next_action": normalize_search_decision(decision), "reexam_iteration_complete": False}
 
 
@@ -364,10 +421,10 @@ def human_approval_node(state: AgentState) -> dict[str, Any]:
             "id": call.get("id"),
             "name": call.get("name"),
             "args": call.get("args", {}),
-            "risk": get_tool_risk(str(call.get("name", ""))),
+            "risk": get_tool_call_risk(str(call.get("name", "")), dict(call.get("args", {}) or {})),
         }
         for call in tool_calls
-        if requires_approval(str(call.get("name", "")))
+        if tool_call_requires_approval(str(call.get("name", "")), dict(call.get("args", {}) or {}))
     ]
 
     approval = interrupt(
@@ -376,6 +433,15 @@ def human_approval_node(state: AgentState) -> dict[str, Any]:
             "message": "是否批准执行这些 medium/high risk 工具调用？",
             "tool_calls": approval_items,
         }
+    )
+    append_session_log(
+        "approval_response",
+        {
+            **runtime_log_context(state),
+            "approved": _is_yes(approval),
+            "raw_value": approval,
+            "tool_calls": approval_items,
+        },
     )
     if _is_yes(approval):
         return {"pending_approval": approval_items, "tool_approved": True}
@@ -391,13 +457,25 @@ def human_approval_node(state: AgentState) -> dict[str, Any]:
     return {"messages": tool_messages, "pending_approval": [], "tool_approved": False}
 
 
-def record_tool_usage_node(state: AgentState) -> dict[str, Any]:
+def record_tool_usage_node(state: AgentState, config: RunnableConfig | None = None) -> dict[str, Any]:
     # ToolNode 执行完后统一记账。当前主要用于 web_search 的“每个用户请求一次”预算。
     counts = dict(state.get("tool_call_counts") or {})
-    ai_message = _last_ai_message(list(state.get("messages", [])))
+    messages = list(state.get("messages", []))
+    ai_message = _last_ai_message(messages)
     for call in _tool_calls(ai_message):
         name = str(call.get("name", ""))
         counts[name] = counts.get(name, 0) + 1
+    log_context = runtime_log_context(state, config)
+    for message in tool_messages_after_last_ai(messages):
+        append_session_log(
+            "tool_result",
+            {
+                **log_context,
+                "tool_name": getattr(message, "name", "") or "tool",
+                "tool_call_id": getattr(message, "tool_call_id", ""),
+                "content": message_content_for_log(message),
+            },
+        )
     return {"tool_call_counts": counts, "pending_approval": [], "tool_approved": False}
 
 
@@ -405,10 +483,47 @@ def tool_error_message(error: Exception) -> str:
     return f"工具执行失败：{type(error).__name__}: {error}"
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def runtime_log_context(state: AgentState, config: RunnableConfig | None = None) -> dict[str, str]:
+    configurable = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+    return {
+        "thread_id": str(state.get("thread_id") or configurable.get("thread_id") or ""),
+        "user_id": str(state.get("user_id") or configurable.get("user_id") or ""),
+        "profile_name": str(state.get("profile_name") or configurable.get("profile_name") or ""),
+    }
+
+
+def message_content_for_log(message: BaseMessage) -> str:
+    content = message.content
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False, default=str)
+
+
+def tool_messages_after_last_ai(messages: list[BaseMessage]) -> list[ToolMessage]:
+    last_ai_index = -1
+    for index, message in enumerate(messages):
+        if isinstance(message, AIMessage):
+            last_ai_index = index
+    return [message for message in messages[last_ai_index + 1 :] if isinstance(message, ToolMessage)]
+
+
 def summarize_if_needed_node(model_name: str = "mimo"):
-    def summarize_if_needed(state: AgentState) -> dict[str, Any]:
+    def summarize_if_needed(state: AgentState, config: RunnableConfig | None = None) -> dict[str, Any]:
         # 返回 RemoveMessage 会影响 checkpoint 中的历史消息。
         # 文件态 working-summary.md 用于保留被删中间消息的压缩信息。
+        last_ai = _last_ai_message(list(state.get("messages", [])))
+        if last_ai is not None and not last_ai.tool_calls:
+            append_session_log(
+                "final_answer",
+                {
+                    **runtime_log_context(state, config),
+                    "content": message_content_for_log(last_ai),
+                },
+            )
         return build_summary_updates(list(state.get("messages", [])), model_name=model_name)
 
     return summarize_if_needed
@@ -452,7 +567,7 @@ def route_after_agent(state: AgentState) -> str:
             return "fake_tool_call_guard"
         return "summarize_if_needed"
 
-    if any(requires_approval(str(call.get("name", ""))) for call in tool_calls) and not state.get("tool_approved"):
+    if any(tool_call_requires_approval(str(call.get("name", "")), dict(call.get("args", {}) or {})) for call in tool_calls) and not state.get("tool_approved"):
         return "human_approval"
     return "tools"
 
@@ -486,8 +601,8 @@ def route_after_reexam_gaps(state: AgentState) -> str:
     if state.get("reexam_iteration_complete"):
         return "ask_user_next_step"
     session = dict(state.get("reexam_session") or {})
-    has_search_history = bool(session.get("candidate_sources") or session.get("reviewed_sources") or session.get("search_queries"))
-    if not has_search_history:
+    has_candidate_sources = bool(session.get("candidate_sources") or session.get("reviewed_sources"))
+    if not has_candidate_sources:
         return "generate_gap_queries"
     return "ask_user_next_step"
 

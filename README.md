@@ -22,6 +22,7 @@ src/personal_research_agent/
   reexam_search_flow.py   # 复试资料搜索循环逻辑
   rag_db.py               # PostgreSQL + pgvector RAG 层
   memory.py               # checkpoint 摘要和长期 store 压缩
+  session_log.py          # sessions/*.jsonl 运行审计日志
   tools/                  # 文件、搜索、RAG、研究会话等工具
 
 profiles/
@@ -31,7 +32,9 @@ tests/
   test_*.py               # 单元测试
 ```
 
-`memory/`、`test/`、`.env`、`.venv` 是本地运行数据或隐私配置，默认不提交。
+`memory/`、`sessions/`、`test/`、`.env`、`.venv` 是本地运行数据或隐私配置，默认不提交。
+
+`memory/sessions/` 是 research session 的业务状态；`sessions/*.jsonl` 是进程级运行日志，用于排查用户输入、模型输出、工具调用、工具结果、interrupt 和错误。
 
 ## 环境准备
 
@@ -163,3 +166,4 @@ cd E:\study\LangGraph
 - 搜索结果只是候选来源，不等于已核验事实。
 - PDF 或正文抽取必须由用户确认后再执行。
 - 不自动生成可售卖最终资料，不自动发布或上架。
+- `run_command` 使用三层命令策略：`rg`、只读 `git`、`python -m unittest`、`python -m py_compile` 自动允许；Python 脚本、`pytest`、`npm test/build/lint`、`uvicorn`、`pip freeze/list/show/check` 以及未明确列出的开发命令需要审批；shell 包壳、安装命令、破坏性 git、敏感配置路径访问会被拒绝。

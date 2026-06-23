@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 from langchain_core.tools import BaseTool
 
@@ -9,6 +10,7 @@ RiskLevel = Literal["low", "medium", "high"]
 
 _TOOLS: list[BaseTool] = []
 _RISK_BY_NAME: dict[str, RiskLevel] = {}
+_RISK_BY_CALL: dict[str, Callable[[dict[str, Any]], RiskLevel]] = {}
 
 
 def register_tool(tool: BaseTool, risk: RiskLevel) -> BaseTool:
@@ -30,8 +32,27 @@ def get_tool_risk(tool_name: str) -> RiskLevel:
     return _RISK_BY_NAME.get(tool_name, "high")
 
 
+def register_tool_call_risk(tool_name: str, risk_fn: Callable[[dict[str, Any]], RiskLevel]) -> None:
+    # 少数工具的风险取决于参数，例如 run_command。
+    _RISK_BY_CALL[tool_name] = risk_fn
+
+
+def get_tool_call_risk(tool_name: str, args: dict[str, Any] | None = None) -> RiskLevel:
+    risk_fn = _RISK_BY_CALL.get(tool_name)
+    if risk_fn is None:
+        return get_tool_risk(tool_name)
+    try:
+        return risk_fn(args or {})
+    except Exception:
+        return "high"
+
+
 def requires_approval(tool_name: str) -> bool:
     return get_tool_risk(tool_name) in {"medium", "high"}
+
+
+def tool_call_requires_approval(tool_name: str, args: dict[str, Any] | None = None) -> bool:
+    return get_tool_call_risk(tool_name, args) in {"medium", "high"}
 
 
 def all_tool_risks() -> dict[str, RiskLevel]:

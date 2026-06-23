@@ -319,10 +319,24 @@ small {
   min-height: 44px;
 }
 
+.message-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
 .message-role {
   font-size: 12px;
   color: #57606a;
-  margin-bottom: 6px;
+}
+
+.message-time {
+  flex: 0 0 auto;
+  color: #8c98a5;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .message pre {
@@ -372,6 +386,10 @@ small {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 700;
+}
+
+.tool-summary .message-time {
+  margin-left: auto;
 }
 
 .tool-detail-text {

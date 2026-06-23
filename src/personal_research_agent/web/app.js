@@ -103,7 +103,7 @@ const reexamApp = createApp({
       this.refreshPanel();
     },
     async deleteSession(sessionId) {
-      // 删除 session 只删除 memory/sessions 下的状态，不删除 test/ 下的资料文件夹。
+      // 删除 session 会清理同名 checkpoint，但不删除 test/ 下的资料文件夹。
       if (!confirm(`确认删除 session：${sessionId}？资料输出目录不会删除。`)) return;
       const res = await fetch(`/sessions/${sessionId}`, { method: "DELETE" });
       if (!res.ok) {
@@ -171,7 +171,7 @@ const reexamApp = createApp({
       // assistant 的流式回答从 message_start 开始创建气泡。
       if (event.type === "message_start") {
         if (event.role === "assistant" || event.role === "tool") {
-          this.messages.push(this.createMessage(event.role, "", event.message_id));
+          this.messages.push(this.createMessage(event.role, "", event.message_id, event.created_at));
         }
         this.scrollMessages();
         return;
@@ -309,7 +309,7 @@ const reexamApp = createApp({
       this.nextUiMessageId += 1;
       return value;
     },
-    createMessage(role, content = "", serverId = "") {
+    createMessage(role, content = "", serverId = "", createdAt = "") {
       // 后端 LangChain message.id 可能重复或为空；前端渲染和展开状态使用 uiId 保持一条气泡一个身份。
       const uiId = this.nextMessageUiId();
       return {
@@ -318,6 +318,7 @@ const reexamApp = createApp({
         uiId,
         role,
         content,
+        createdAt: createdAt || this.nowIso(),
       };
     },
     normalizeMessages(messages) {
@@ -325,14 +326,27 @@ const reexamApp = createApp({
       return messages.map((message) => {
         const serverId = String(message?.serverId || message?.id || "");
         const uiId = message?.uiId || this.nextMessageUiId();
+        const createdAt = message?.createdAt || message?.created_at || this.nowIso();
         return {
           ...message,
           id: serverId || uiId,
           serverId,
           uiId,
           content: String(message?.content || ""),
+          createdAt,
         };
       });
+    },
+    nowIso() {
+      return new Date().toISOString();
+    },
+    formatMessageTime(value) {
+      const date = value ? new Date(value) : new Date();
+      if (Number.isNaN(date.getTime())) return "";
+      return new Intl.DateTimeFormat("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(date);
     },
     findMessageByServerId(serverId) {
       // 从尾部找，避免后端重复 message_id 时把新 delta 追加到旧气泡。

@@ -10,7 +10,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from personal_research_agent.graph import route_after_agent, tool_error_message
-from personal_research_agent.tools import get_registered_tools, get_tool_risk, requires_approval
+from personal_research_agent.tools import get_registered_tools, get_tool_call_risk, get_tool_risk, requires_approval
 
 
 class RiskAndRouteTests(unittest.TestCase):
@@ -26,8 +26,26 @@ class RiskAndRouteTests(unittest.TestCase):
         message = AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"query": "test"}, "id": "call_1"}])
         self.assertEqual(route_after_agent({"messages": [message], "tool_call_counts": {"web_search": 99}}), "tools")
 
+    def test_safe_run_command_routes_to_tools(self):
+        message = AIMessage(
+            content="",
+            tool_calls=[{"name": "run_command", "args": {"command": ["python", "-m", "unittest", "tests.test_safety"]}, "id": "call_1"}],
+        )
+
+        self.assertEqual(route_after_agent({"messages": [message], "tool_call_counts": {}}), "tools")
+
+    def test_risky_run_command_routes_to_human_approval(self):
+        message = AIMessage(
+            content="",
+            tool_calls=[{"name": "run_command", "args": {"command": ["python", "check_pg.py"]}, "id": "call_1"}],
+        )
+
+        self.assertEqual(route_after_agent({"messages": [message], "tool_call_counts": {}}), "human_approval")
+
     def test_risk_registry(self):
         self.assertEqual(get_tool_risk("read_file"), "low")
+        self.assertEqual(get_tool_risk("run_command"), "low")
+        self.assertEqual(get_tool_call_risk("run_command", {"command": ["python", "check_pg.py"]}), "high")
         self.assertTrue(requires_approval("write_text_file"))
 
     def test_tool_node_returns_tool_message_on_file_error(self):

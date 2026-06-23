@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from personal_research_agent.graph import (
     route_after_reexam_decision,
+    route_after_reexam_gaps,
     route_after_reexam_parse,
     route_after_reexam_route_confirmation,
     route_after_reexam_router,
@@ -102,6 +103,25 @@ class ReexamSearchFlowTests(unittest.TestCase):
         self.assertEqual(route_after_reexam_decision({"reexam_next_action": "continue"}), "generate_gap_queries")
         self.assertEqual(route_after_reexam_decision({"reexam_next_action": "next"}), "source_confirmation")
         self.assertEqual(route_after_reexam_decision({"reexam_next_action": "stop"}), "stop_reexam_search")
+
+    def test_pending_queries_do_not_skip_search_iteration(self):
+        state = {
+            "reexam_iteration_complete": False,
+            "reexam_session": {
+                "search_queries": [
+                    {
+                        "query_id": "experience_1",
+                        "query": "河南农业大学 人工智能 2026 复试经验",
+                        "query_type": "experience",
+                        "status": "pending",
+                    }
+                ],
+                "candidate_sources": [],
+                "reviewed_sources": [],
+            },
+        }
+
+        self.assertEqual(route_after_reexam_gaps(state), "generate_gap_queries")
 
     def test_record_search_iteration_appends_sources_and_marks_query_done(self):
         saved = {}
